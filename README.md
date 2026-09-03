@@ -1,56 +1,55 @@
-# Product Matcher (IA) — repo temporal
+# Proveedor IA
 
-Bot que lee un Excel de productos, busca alternativas en Alibaba y
-MadeInChina, y usa OpenAI (embeddings + GPT-4o) para elegir el mejor match.
+MVP en Next.js + React para cargar una hoja de cálculo y buscar productos
+similares en Alibaba y Made-in-China mediante la Responses API de OpenAI.
 
-Construido con la misma convención del proyecto grande al que se integrará
-más adelante: **Next.js (App Router) + TypeScript + shadcn/ui + pnpm**, para
-que la migración sea solo mover carpetas.
+## Requisitos
 
-## Estado actual: entorno configurado, lógica pendiente
+- Node.js 20 o superior.
+- Una cuenta de API de OpenAI con facturación o saldo activo.
+- Un archivo `.xlsx` con estas columnas:
+  - `DESCRIPTION NUEVA ESPAÑOL`
+  - `DESCRIPTION NUEVA INGLES`
+  - `TOTAL UNIT`
+  - `PRICE`
+  - `LINKS ORIGINAL`
 
-Lo que ya está listo:
-- Proyecto Next.js + TypeScript + Tailwind funcionando (`pnpm dev` levanta OK).
-- shadcn/ui configurado manualmente (`components.json`, `lib/utils.ts`,
-  variables de tema en `app/globals.css`) — el CLI de shadcn no pudo
-  descargar su registro remoto desde este entorno de desarrollo, así que se
-  configuró a mano con el mismo resultado.
-- Dependencias instaladas: `playwright`, `openai`, `xlsx`, `uuid`,
-  `clsx`, `tailwind-merge`, `class-variance-authority`, `lucide-react`.
-- Estructura de carpetas creada:
-  - `app/api/upload`, `app/api/status/[jobId]`, `app/api/download/[jobId]` (stubs)
-  - `services/excelParser.ts`, `services/scraper.ts`, `services/matcher.ts` (stubs)
-  - `lib/jobStore.ts` (stub)
-  - `types/product.ts` (tipos ya definidos)
-- `Dockerfile` listo para desplegar en Railway/Render (usa la imagen oficial
-  de Playwright, necesaria porque el scraping no corre en serverless).
-- `.env.example` con `OPENAI_API_KEY`.
+## Configuración
 
-Lo que falta (siguiente paso, cuando confirmes): implementar la lógica real
-dentro de cada archivo marcado con `// TODO` — parseo de Excel, scraping con
-Playwright, matching con OpenAI, y las páginas de UI con shadcn/ui
-(`data-table`, `filter-bar`, `status-badge`, etc., igual que en el repo grande).
+### Instalación sencilla en Windows
 
-## Cómo correrlo
+Descomprime el proyecto y haz doble clic en `INSTALAR-Y-EJECUTAR.bat`. El
+asistente solicita la API key de forma oculta, crea `.env.local`, instala las
+dependencias e inicia el servidor.
 
-```bash
-pnpm install
-cp .env.example .env   # agrega tu OPENAI_API_KEY real
-npx playwright install --with-deps chromium
-pnpm dev
-```
+### Configuración manual
 
-Abre `http://localhost:3000`.
+1. Instala dependencias:
 
-## Columnas esperadas en el Excel
+   ```powershell
+   npm install
+   ```
 
-- `DESCRIPTION NUEVA ESPAÑOL`
-- `DESCRIPTION NUEVA INGLES`
-- `TOTAL UNIT`
-- `PRICE`
-- `LINKS ORIGINAL`
+2. Copia `.env.example` como `.env.local` y añade la clave:
 
-## Despliegue
+   ```text
+   OPENAI_API_KEY=sk-proj-...
+   OPENAI_MODEL=gpt-5.4-mini
+   ```
 
-No usar Vercel (serverless, sin soporte para navegador headless). Usar
-Railway o Render con el `Dockerfile` incluido.
+3. Inicia el proyecto:
+
+   ```powershell
+   npm run dev
+   ```
+
+4. Abre `http://localhost:3000`.
+
+## Alcance del MVP
+
+- La hoja se lee en el navegador y no se sube completa al servidor.
+- Se busca una fila a la vez para controlar costos y revisar calidad.
+- La clave permanece en el servidor.
+- Los resultados se pueden exportar a un nuevo Excel.
+- El puntaje es orientativo: precio, MOQ y especificaciones deben confirmarse
+  con el proveedor antes de comprar.

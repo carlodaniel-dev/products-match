@@ -100,6 +100,7 @@ export async function exportResults(rows: ProductRow[]) {
       "ENLACE CANDIDATO": candidate.url,
       COINCIDENCIAS: candidate.matches.join(" | "),
       DIFERENCIAS: candidate.differences.join(" | "),
+      "REVISION MANUAL": candidate.reviewStatus ?? "sin revisar",
       JUSTIFICACION: candidate.rationale,
     }));
   });

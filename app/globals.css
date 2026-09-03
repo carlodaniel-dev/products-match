@@ -113,12 +113,14 @@ h1 { margin-bottom: 12px; font-family: Georgia, serif; font-size: clamp(54px, 8v
 .fileName { max-width: 220px; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .notice { width: 100%; margin: 8px 0 0; color: var(--red); }
 .primary:disabled { cursor: wait; opacity: .65; }
+.primary.compact { padding: 9px 13px; font-size: 12px; }
 .ghost { padding: 9px 13px; border-color: var(--line); background: var(--green-soft); color: var(--green); }
 
 .workspace { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 20px; align-items: start; }
 .sidebar { position: sticky; top: 18px; padding: 20px 10px 10px; }
 .sectionHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .sidebar .sectionHeading { padding: 0 10px 14px; }
+.sidebarActions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .rowList { display: grid; gap: 4px; max-height: calc(100vh - 210px); overflow: auto; }
 .rowItem { display: grid; grid-template-columns: 9px 1fr; gap: 12px; width: 100%; padding: 12px 10px; text-align: left; border: 0; border-radius: 12px; background: transparent; color: var(--ink); cursor: pointer; }
 .rowItem:hover { background: rgba(255, 255, 255, .035); }
@@ -208,4 +210,200 @@ dd { margin: 0; font-size: 13px; line-height: 1.45; }
   .productCard, .candidate, .summary { padding: 20px; }
   .productCard .sectionHeading { flex-direction: column; }
   .facts, .priceLine, .comparison { grid-template-columns: 1fr; }
+}
+
+/* Ajustes V2: diseño más compacto y estados de enlaces */
+.card {
+  backdrop-filter: blur(10px);
+  background: linear-gradient(145deg, rgba(14, 24, 22, .98), rgba(5, 10, 9, .98));
+  border-color: rgba(45, 226, 196, .16);
+}
+
+.hero { min-height: 150px; padding-bottom: 26px; }
+.hero p { font-size: 15px; }
+h1 { font-size: clamp(44px, 6vw, 82px); }
+.upload { margin: 22px 0 16px; padding: 18px 20px; }
+
+.workspace { grid-template-columns: 310px minmax(0, 1fr); gap: 16px; }
+.sidebar { padding: 16px 9px 9px; }
+.rowItem { grid-template-columns: 10px 1fr; gap: 10px; padding: 10px 9px; }
+.rowItem.active { background: rgba(45, 226, 196, .13); }
+.status { width: 8px; height: 8px; }
+.status.pendiente { background: #52625f; }
+.status.buscando { background: var(--amber); box-shadow: 0 0 0 4px rgba(244, 189, 91, .15); }
+.status.listo { background: var(--green); box-shadow: 0 0 10px rgba(45, 226, 196, .45); }
+.status.sin-enlaces, .status.error { background: var(--red); box-shadow: 0 0 10px rgba(255, 121, 108, .38); }
+
+.productCard { padding: 22px; }
+.productCard h2 { font-size: clamp(22px, 2.6vw, 32px); }
+.facts { gap: 8px; margin-top: 22px; }
+.facts div { padding: 12px; }
+
+.summary { padding: 16px 18px; }
+.summary p, .summary li { font-size: 13px; line-height: 1.45; }
+
+.candidates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.candidate {
+  padding: 13px;
+  border-radius: 13px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, .22);
+}
+
+.candidateTop { gap: 5px; margin-bottom: 8px; }
+.rank, .market, .score { padding: 4px 7px; font-size: 10px; }
+.candidate h3 {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-bottom: 4px;
+  font-size: 16px;
+  line-height: 1.18;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.supplier { margin-bottom: 8px; font-size: 11px; }
+.priceLine { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin: 9px 0; }
+.priceLine > span { padding: 7px; border-radius: 8px; font-size: 11px; }
+dt, .priceLine small { margin-bottom: 4px; font-size: 9px; }
+.comparison { grid-template-columns: 1fr 1fr; gap: 9px; }
+.comparison h4 { margin-bottom: 6px; font-size: 12px; }
+.comparison ul { padding-left: 15px; font-size: 11px; line-height: 1.35; }
+.comparison li:nth-child(n+3) { display: none; }
+.rationale {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 9px 0;
+  padding-top: 9px;
+  font-size: 11px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.candidateLink { font-size: 12px; }
+
+@media (max-width: 900px) {
+  .workspace { grid-template-columns: 1fr; }
+  .candidates { grid-template-columns: 1fr; }
+}
+
+/* Métricas de rendimiento */
+.performancePanel {
+  display: grid;
+  grid-template-columns: minmax(220px, .75fr) minmax(0, 1.6fr);
+  gap: 18px;
+  align-items: start;
+  margin: 0 0 16px;
+  padding: 18px 20px;
+}
+
+.performancePanel h2 {
+  margin-bottom: 6px;
+  font-family: Georgia, serif;
+  font-size: 21px;
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.metricsGrid div {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(45, 226, 196, .14);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, .22);
+}
+
+.metricsGrid dt {
+  margin-bottom: 5px;
+  font-size: 9px;
+}
+
+.metricsGrid dd {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowMetrics {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.rowMetrics dd { font-size: 14px; }
+
+@media (max-width: 900px) {
+  .performancePanel { grid-template-columns: 1fr; }
+}
+/* Revisión manual de candidatos */
+.reviewBox {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 9px;
+  padding: 9px;
+  border: 1px solid rgba(45, 226, 196, .14);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .2);
+}
+
+.reviewBox > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.reviewActions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.reviewButton {
+  cursor: pointer;
+  min-width: 0;
+  padding: 7px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .035);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+
+.reviewButton.approved.active {
+  border-color: rgba(45, 226, 196, .7);
+  background: rgba(45, 226, 196, .18);
+  color: var(--green);
+}
+
+.reviewButton.denied.active {
+  border-color: rgba(255, 121, 108, .7);
+  background: rgba(255, 121, 108, .16);
+  color: var(--red);
+}
+
+.reviewButton.revision.active {
+  border-color: rgba(244, 189, 91, .7);
+  background: rgba(244, 189, 91, .16);
+  color: var(--amber);
+}
+
+.reviewButton:hover {
+  border-color: rgba(45, 226, 196, .42);
+  color: var(--ink);
 }

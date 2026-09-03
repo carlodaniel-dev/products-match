@@ -86,24 +86,108 @@ type CandidateResult = {
   rationale: string;
 };
 
+type SearchMetrics = {
+  model: string;
+  durationMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  candidatesBeforeFilter?: number;
+  candidatesAfterFilter?: number;
+  skippedOpenAI?: boolean;
+};
+
 type SupplierSearchResult = {
   summary: string;
   warnings: string[];
   candidates: CandidateResult[];
+  metrics?: SearchMetrics;
 };
+
+type OpenAIUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  input_tokens_details?: {
+    cached_tokens?: number;
+  };
+};
+
+function usageToMetrics(usage: OpenAIUsage | null | undefined) {
+  return {
+    inputTokens: usage?.input_tokens,
+    outputTokens: usage?.output_tokens,
+    totalTokens: usage?.total_tokens,
+    cachedInputTokens: usage?.input_tokens_details?.cached_tokens,
+  };
+}
+
+function isMarketplaceHost(hostname: string) {
+  return (
+    hostname === "alibaba.com" ||
+    hostname.endsWith(".alibaba.com") ||
+    hostname === "made-in-china.com" ||
+    hostname.endsWith(".made-in-china.com")
+  );
+}
+
+function isLikelyProductDetailUrl(url: URL) {
+  const pathname = url.pathname.toLowerCase();
+  const href = url.href.toLowerCase();
+
+  if (!pathname || pathname === "/") return false;
+
+  const nonProductMarkers = [
+    "/trade/search",
+    "/products-search",
+    "/productdirectory",
+    "/catalog",
+    "/category",
+    "/categories",
+    "/showroom/",
+    "/supplier/",
+    "/company/",
+    "/manufacturers/",
+    "/wholesale/",
+  ];
+
+  if (nonProductMarkers.some((marker) => href.includes(marker))) return false;
+
+  return (
+    pathname.includes("product-detail") ||
+    pathname.includes("productdetail") ||
+    pathname.includes("/product/") ||
+    pathname.endsWith(".html")
+  );
+}
 
 function isAllowedCandidate(candidate: { url?: string }) {
   try {
-    const hostname = new URL(candidate.url ?? "").hostname.toLowerCase();
-    return (
-      hostname === "alibaba.com" ||
-      hostname.endsWith(".alibaba.com") ||
-      hostname === "made-in-china.com" ||
-      hostname.endsWith(".made-in-china.com")
-    );
+    const url = new URL(candidate.url ?? "");
+    const hostname = url.hostname.toLowerCase();
+    return isMarketplaceHost(hostname) && isLikelyProductDetailUrl(url);
   } catch {
     return false;
   }
+}
+
+function normalizeUrlForComparison(value: string) {
+  try {
+    const url = new URL(value.trim());
+    url.hash = "";
+    url.search = "";
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+    url.pathname = url.pathname.replace(/\/+$|^\s+|\s+$/g, "");
+    return `${url.hostname}${url.pathname}`.toLowerCase();
+  } catch {
+    return value.trim().toLowerCase().replace(/[?#].*$/, "").replace(/\/+$/, "");
+  }
+}
+
+function isOriginalLinkCandidate(candidate: { url?: string }, originalLink: string) {
+  if (!candidate.url || !originalLink.trim()) return false;
+  return normalizeUrlForComparison(candidate.url) === normalizeUrlForComparison(originalLink);
 }
 
 function normalizeNumberToken(value: string) {
@@ -149,61 +233,220 @@ function priceScoreFromRatio(ratio: number) {
   return 5;
 }
 
-function rerankByTargetPrice(
+function confidenceFromScore(score: number): "alta" | "media" | "baja" {
+  if (score >= 82) return "alta";
+  if (score >= 58) return "media";
+  return "baja";
+}
+
+function appendUnique(list: string[], note: string) {
+  return list.some((item) => item.toLowerCase() === note.toLowerCase())
+    ? list
+    : [...list, note];
+}
+
+function normalizeLinkMarker(value: string) {
+  return value
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function hasUsableOriginalLink(originalLink: string) {
+  const cleanLink = originalLink.trim();
+  if (!cleanLink) return false;
+
+  const normalized = normalizeLinkMarker(cleanLink);
+  const invalidMarkers = [
+    "link incorrecto",
+    "link erroneo",
+    "enlace incorrecto",
+    "enlace erroneo",
+    "sin link",
+    "sin enlace",
+    "no link",
+    "no enlace",
+    "no disponible",
+    "n/a",
+    "na",
+    "-",
+    "--",
+  ];
+
+  if (invalidMarkers.includes(normalized)) return false;
+  if (normalized.includes("link incorrecto") || normalized.includes("enlace incorrecto")) {
+    return false;
+  }
+
+  try {
+    const url = new URL(cleanLink);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function skippedMissingOriginalLinkResult(
+  originalLink: string,
+  durationMs = 0,
+  model = process.env.OPENAI_MODEL || "gpt-4.1-mini",
+): SupplierSearchResult {
+  const reason = originalLink.trim()
+    ? `La referencia original tiene el valor "${originalLink.trim()}" y se marco como no utilizable.`
+    : "La referencia original esta vacia.";
+
+  return {
+    summary:
+      "Producto omitido: no se gasto busqueda con IA porque no tiene un enlace original valido para identificarlo.",
+    warnings: [
+      reason,
+      "Corrige la columna LINKS ORIGINAL y vuelve a buscar esta fila si quieres alternativas.",
+    ],
+    candidates: [],
+  };
+}
+
+function pickRequestedUnits(totalUnitsText: string) {
+  const quantities = extractNumbers(totalUnitsText);
+  if (!quantities.length) return undefined;
+  return Math.max(1, Math.round(quantities[0]));
+}
+
+function pickMinimumOrder(minimumOrderText: string) {
+  const quantities = extractNumbers(minimumOrderText);
+  if (!quantities.length) return undefined;
+
+  // En textos tipo "100-500 pieces" conviene usar la cantidad minima visible.
+  return Math.max(1, Math.round(Math.min(...quantities)));
+}
+
+function quantityScoreFromRatio(ratio: number) {
+  if (ratio <= 1) return 100;
+  if (ratio <= 1.5) return 85;
+  if (ratio <= 3) return 65;
+  if (ratio <= 5) return 40;
+  if (ratio <= 10) return 20;
+  return 5;
+}
+
+function rerankByTargetPriceAndQuantity(
   candidates: CandidateResult[],
   targetPriceText: string,
+  totalUnitsText: string,
 ) {
   const targetPrice = extractNumbers(targetPriceText)[0];
-  if (!targetPrice) return candidates;
+  const requestedUnits = pickRequestedUnits(totalUnitsText);
+
+  if (!targetPrice && !requestedUnits) return candidates;
 
   return candidates
     .map((candidate) => {
-      const candidatePrice = pickClosestPrice(candidate.listedPrice, targetPrice);
+      const matches = [...candidate.matches];
+      const differences = [...candidate.differences];
+      const rationaleNotes: string[] = [];
+      let score = candidate.score;
+      let priceScore: number | undefined;
+      let quantityScore: number | undefined;
 
-      if (!candidatePrice) {
-        const score = Math.min(75, Math.round(candidate.score * 0.75));
-        return {
-          ...candidate,
-          score,
-          confidence: candidate.confidence === "alta" ? "media" : candidate.confidence,
-          differences: [
-            ...candidate.differences,
-            "No se pudo comparar el precio porque el precio publicado no es visible o no es numérico.",
-          ],
-          rationale: `${candidate.rationale} Precio objetivo: ${targetPriceText}. Precio publicado no comparable, por eso se limita el puntaje.`,
-        };
+      if (targetPrice) {
+        const candidatePrice = pickClosestPrice(candidate.listedPrice, targetPrice);
+
+        if (!candidatePrice) {
+          priceScore = 45;
+          differences.push(
+            "No se pudo comparar el precio porque el precio publicado no es visible o no es numerico.",
+          );
+          rationaleNotes.push(
+            `Precio objetivo: ${targetPriceText}. Precio publicado no comparable, por eso se penaliza el puntaje.`,
+          );
+        } else {
+          const differenceRatio = Math.abs(candidatePrice - targetPrice) / targetPrice;
+          const direction = candidatePrice > targetPrice ? "por encima" : "por debajo";
+          const differencePercent = Math.round(differenceRatio * 100);
+          priceScore = priceScoreFromRatio(differenceRatio);
+          const priceNote = `Precio comparable aprox. ${candidatePrice}; esta ${differencePercent}% ${direction} del objetivo ${targetPrice}.`;
+
+          if (differenceRatio <= 0.25) {
+            matches.push(priceNote);
+          } else {
+            differences.push(priceNote);
+          }
+          rationaleNotes.push(priceNote);
+        }
       }
 
-      const differenceRatio = Math.abs(candidatePrice - targetPrice) / targetPrice;
-      const direction = candidatePrice > targetPrice ? "por encima" : "por debajo";
-      const differencePercent = Math.round(differenceRatio * 100);
-      const priceScore = priceScoreFromRatio(differenceRatio);
-      let score = Math.round(candidate.score * 0.55 + priceScore * 0.45);
+      if (requestedUnits) {
+        const minimumOrder = pickMinimumOrder(candidate.minimumOrder);
 
-      if (differenceRatio > 1.5) score = Math.min(score, 45);
-      else if (differenceRatio > 0.75) score = Math.min(score, 62);
-      else if (differenceRatio > 0.35) score = Math.min(score, 78);
+        if (!minimumOrder) {
+          quantityScore = 55;
+          differences.push(
+            "No se pudo comparar la cantidad minima porque el MOQ no es visible o no es numerico.",
+          );
+          rationaleNotes.push(
+            `Cantidad solicitada: ${requestedUnits}. MOQ no comparable, por eso se penaliza moderadamente.`,
+          );
+        } else {
+          const ratio = minimumOrder / requestedUnits;
+          quantityScore = quantityScoreFromRatio(ratio);
+          const quantityNote =
+            minimumOrder <= requestedUnits
+              ? `MOQ aprox. ${minimumOrder}, compatible con las ${requestedUnits} unidades solicitadas.`
+              : `MOQ aprox. ${minimumOrder}, supera las ${requestedUnits} unidades solicitadas.`;
 
-      const priceNote =
-        `Precio comparable aprox. ${candidatePrice}; está ${differencePercent}% ${direction} del objetivo ${targetPrice}.`;
+          if (minimumOrder <= requestedUnits) {
+            matches.push(quantityNote);
+          } else {
+            differences.push(quantityNote);
+          }
+          rationaleNotes.push(quantityNote);
+        }
+      }
+
+      if (priceScore !== undefined && quantityScore !== undefined) {
+        score = Math.round(candidate.score * 0.45 + priceScore * 0.35 + quantityScore * 0.2);
+      } else if (priceScore !== undefined) {
+        score = Math.round(candidate.score * 0.55 + priceScore * 0.45);
+      } else if (quantityScore !== undefined) {
+        score = Math.round(candidate.score * 0.75 + quantityScore * 0.25);
+      }
+
+      if (targetPrice) {
+        const candidatePrice = pickClosestPrice(candidate.listedPrice, targetPrice);
+        if (candidatePrice) {
+          const differenceRatio = Math.abs(candidatePrice - targetPrice) / targetPrice;
+          if (differenceRatio > 1.5) score = Math.min(score, 45);
+          else if (differenceRatio > 0.75) score = Math.min(score, 62);
+          else if (differenceRatio > 0.35) score = Math.min(score, 78);
+        }
+      }
+
+      if (requestedUnits) {
+        const minimumOrder = pickMinimumOrder(candidate.minimumOrder);
+        if (minimumOrder) {
+          const quantityRatio = minimumOrder / requestedUnits;
+          if (quantityRatio > 10) score = Math.min(score, 45);
+          else if (quantityRatio > 5) score = Math.min(score, 58);
+          else if (quantityRatio > 3) score = Math.min(score, 70);
+        }
+      }
+
+      score = Math.max(0, Math.min(100, score));
 
       return {
         ...candidate,
         score,
-        differences:
-          differenceRatio > 0.35
-            ? [...candidate.differences, priceNote]
-            : candidate.differences,
-        matches:
-          differenceRatio <= 0.25
-            ? [...candidate.matches, priceNote]
-            : candidate.matches,
-        rationale: `${candidate.rationale} ${priceNote}`,
+        confidence: confidenceFromScore(score),
+        matches: Array.from(new Set(matches)).slice(0, 8),
+        differences: Array.from(new Set(differences)).slice(0, 8),
+        rationale: `${candidate.rationale} ${rationaleNotes.join(" ")}`.trim(),
       };
     })
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
 }
-
 export async function POST(request: Request) {
   if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json(
@@ -221,6 +464,19 @@ export async function POST(request: Request) {
   }
 
   const product = parsed.data;
+  const requestStartedAt = Date.now();
+  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+
+  if (!hasUsableOriginalLink(product.originalLink)) {
+    const result = skippedMissingOriginalLinkResult(
+      product.originalLink,
+      Date.now() - requestStartedAt,
+      model,
+    );
+    console.log("Proveedor IA search metrics:", result.metrics);
+    return NextResponse.json(result);
+  }
+
   if (!product.descriptionEs && !product.descriptionEn && !product.originalLink) {
     return NextResponse.json(
       { error: "La fila no contiene información suficiente para buscar." },
@@ -231,16 +487,12 @@ export async function POST(request: Request) {
   try {
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
+      model,
       store: false,
-      reasoning: { effort: "low" },
       tools: [
         {
           type: "web_search",
           search_context_size: "low",
-          filters: {
-            allowed_domains: ["alibaba.com", "made-in-china.com"],
-          },
         },
       ],
       tool_choice: "auto",
@@ -256,7 +508,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "Eres analista de compras internacionales. Busca productos reales y actualmente visibles solo en Alibaba y Made-in-China. Compara identidad, función, material, dimensiones, especificaciones, cantidad mínima y precio. No inventes datos: usa 'No visible' cuando la página no los muestre. El precio objetivo es un criterio principal: prioriza candidatos con precio unitario visible lo más cercano posible al objetivo, idealmente dentro de ±25%. Si un candidato supera el objetivo por más de 35%, no debe quedar arriba salvo que no existan opciones mejores. Si supera el objetivo por más del 100%, inclúyelo sólo como alternativa débil y explica la diferencia. El precio objetivo puede no indicar moneda o si es unitario; señálalo como advertencia. Devuelve como máximo cinco candidatos, ordenados por similitud técnica y cercanía de precio. Una URL debe apuntar a una ficha concreta del producto, no a una búsqueda, categoría o página principal. Asigna confianza baja si faltan especificaciones decisivas o si el precio no es comparable. El puntaje es una ayuda, no una afirmación de equivalencia.",
+            "Eres analista de compras internacionales. Primero analiza el enlace original del producto de referencia y extrae de esa ficha el nombre/titulo real, precio visible, cantidad minima/MOQ visible, detalles tecnicos y cualquier informacion visual disponible de la imagen principal o miniaturas, como color, forma, material aparente, tipo de producto o empaque. Si la imagen no es accesible o no hay datos visibles, dilo como 'No visible' y no inventes. Despues busca productos reales y actualmente visibles solo en Alibaba y Made-in-China. La ficha original pesa mas que las descripciones de la hoja cuando haya conflicto. Compara identidad, funcion, material, dimensiones, especificaciones, aspecto visual, cantidad minima/MOQ y precio. No inventes datos: usa 'No visible' cuando la pagina no los muestre. El precio de la ficha original y/o el precio objetivo son criterios principales: prioriza candidatos con precio unitario visible lo mas cercano posible, idealmente dentro de +/-20%, y con MOQ igual o menor a las unidades solicitadas. Si un candidato supera el precio de referencia por mas de 35%, no debe quedar arriba salvo que no existan opciones mejores. Si supera el precio por mas del 100%, incluyelo solo como alternativa debil y explica la diferencia. Si el MOQ supera mucho las unidades solicitadas, bajalo de prioridad aunque el producto sea similar. Devuelve como maximo cinco candidatos, ordenados por similitud tecnica, similitud visual, cercania de precio y compatibilidad de cantidad minima. Una URL debe apuntar a una ficha concreta del producto, no a una busqueda, categoria, showroom, proveedor o pagina principal. Nunca devuelvas el mismo enlace original como candidato; los candidatos deben ser alternativas distintas. Rechaza enlaces que redirijan a Made-in-China o Alibaba sin mostrar una ficha concreta. Asigna confianza baja si faltan especificaciones decisivas, si el precio no es comparable, si el MOQ no es compatible o si no pudiste confirmar la imagen. El puntaje es una ayuda, no una afirmacion de equivalencia.",
         },
         {
           role: "user",
@@ -267,18 +519,37 @@ export async function POST(request: Request) {
 - Precio objetivo: ${product.targetPrice || "No disponible"}
 - Enlace original para identificar el producto: ${product.originalLink || "No disponible"}
 
-Busca alternativas lo más parecidas posible, pero descarta o baja de prioridad las opciones con precio muy lejano al objetivo. Explica coincidencias y diferencias verificables.`,
+Proceso requerido para esta prueba:
+1. Abre/analiza primero el enlace original y toma de ahi el nombre real del producto, precio visible, MOQ/cantidad minima visible y detalles visibles de la imagen principal si estan disponibles.
+2. Usa esos datos del enlace original como referencia principal para buscar alternativas en Alibaba y Made-in-China.
+3. Devuelve solamente fichas concretas de producto. No devuelvas paginas de busqueda, categoria, showroom, portada de proveedor ni enlaces que no muestren producto. No incluyas el enlace original dentro de las opciones.
+4. Descarta o baja de prioridad las opciones con precio muy lejano al producto original/objetivo o MOQ/cantidad minima muy superior a las unidades solicitadas.
+5. En matches/differences explica coincidencias y diferencias verificables, incluyendo si el nombre, precio, MOQ o imagen del enlace original no fueron visibles.`,
         },
       ],
     });
 
     const result = JSON.parse(response.output_text) as SupplierSearchResult;
+    const candidatesBeforeFilter = Array.isArray(result.candidates) ? result.candidates.length : 0;
     result.candidates = Array.isArray(result.candidates)
-      ? rerankByTargetPrice(
-          result.candidates.filter(isAllowedCandidate),
+      ? rerankByTargetPriceAndQuantity(
+          result.candidates.filter((candidate) =>
+            isAllowedCandidate(candidate) && !isOriginalLinkCandidate(candidate, product.originalLink),
+          ),
           product.targetPrice,
+          product.totalUnits,
         )
       : [];
+
+    result.metrics = {
+      model,
+      durationMs: Date.now() - requestStartedAt,
+      ...usageToMetrics(response.usage),
+      candidatesBeforeFilter,
+      candidatesAfterFilter: result.candidates.length,
+    };
+
+    console.log("Proveedor IA search metrics:", result.metrics);
 
     return NextResponse.json(result);
   } catch (error) {

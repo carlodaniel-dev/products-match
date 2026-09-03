@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { exportResults, readProducts } from "@/lib/spreadsheet";
-import type { ProductRow, SearchResult } from "@/lib/types";
+import type { CandidateReviewStatus, ProductRow, SearchMetrics, SearchResult } from "@/lib/types";
 
 export default function Home() {
   const [rows, setRows] = useState<ProductRow[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [fileName, setFileName] = useState("");
   const [notice, setNotice] = useState("");
+  const [searchingAll, setSearchingAll] = useState(false);
 
   const selected = useMemo(
     () => rows.find((row) => row.id === selectedId) ?? rows[0],
@@ -18,6 +19,7 @@ export default function Home() {
   async function handleFile(file?: File) {
     if (!file) return;
     setNotice("");
+    setSearchingAll(false);
     try {
       const products = await readProducts(file);
       setRows(products);
@@ -31,38 +33,42 @@ export default function Home() {
     }
   }
 
-  async function searchRow(id: string) {
-    const product = rows.find((row) => row.id === id);
-    if (!product || product.status === "buscando") return;
+  async function requestAlternatives(product: ProductRow) {
+    const response = await fetch("/api/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(product),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "La búsqueda falló.");
+    return payload as SearchResult;
+  }
+
+  async function searchProduct(product: ProductRow) {
+    if (product.status === "buscando") return;
 
     setRows((current) =>
       current.map((row) =>
-        row.id === id
+        row.id === product.id
           ? { ...row, status: "buscando", error: undefined }
           : row,
       ),
     );
 
     try {
-      const response = await fetch("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(product),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "La búsqueda falló.");
-
+      const result = await requestAlternatives(product);
       setRows((current) =>
         current.map((row) =>
-          row.id === id
-            ? { ...row, status: "listo", result: payload as SearchResult }
+          row.id === product.id
+            ? { ...row, status: "listo", result }
             : row,
         ),
       );
     } catch (error) {
       setRows((current) =>
         current.map((row) =>
-          row.id === id
+          row.id === product.id
             ? {
                 ...row,
                 status: "error",
@@ -74,7 +80,126 @@ export default function Home() {
     }
   }
 
+  async function searchRow(id: string) {
+    const product = rows.find((row) => row.id === id);
+    if (!product || searchingAll) return;
+    await searchProduct(product);
+  }
+
+  async function searchAllRows() {
+    if (searchingAll || rows.length === 0) return;
+
+    setSearchingAll(true);
+    setNotice("Buscando alternativas para todos los productos, uno por uno.");
+
+    const productsToSearch = rows.filter((row) => row.status !== "buscando");
+    try {
+      for (const product of productsToSearch) {
+        setSelectedId(product.id);
+        await searchProduct(product);
+      }
+      setNotice("Búsqueda de todos los productos finalizada.");
+    } finally {
+      setSearchingAll(false);
+    }
+  }
+
   const completed = rows.filter((row) => row.status === "listo").length;
+  const hasRows = rows.length > 0;
+  const searchedRows = rows.filter((row) => row.status === "listo" || row.status === "error");
+  const technicalErrors = rows.filter((row) => row.status === "error");
+  const skippedRows = rows.filter((row) => row.result?.metrics?.skippedOpenAI);
+  const measuredRows = rows.filter((row) => row.result?.metrics?.durationMs !== undefined);
+  const allCandidates = rows.flatMap((row) => row.result?.candidates ?? []);
+  const reviewedCandidates = allCandidates.filter((candidate) => candidate.reviewStatus);
+  const approvedCandidates = allCandidates.filter((candidate) => candidate.reviewStatus === "aprobado");
+  const deniedCandidates = allCandidates.filter((candidate) => candidate.reviewStatus === "negado");
+  const revisionCandidates = allCandidates.filter((candidate) => candidate.reviewStatus === "revision");
+  const pendingCandidates = allCandidates.length - reviewedCandidates.length;
+  const totalDurationMs = measuredRows.reduce(
+    (sum, row) => sum + (row.result?.metrics?.durationMs ?? 0),
+    0,
+  );
+  const totalTokens = measuredRows.reduce(
+    (sum, row) => sum + (row.result?.metrics?.totalTokens ?? 0),
+    0,
+  );
+  const manualErrorRate = reviewedCandidates.length
+    ? (deniedCandidates.length / reviewedCandidates.length) * 100
+    : 0;
+  const approvalRate = reviewedCandidates.length
+    ? (approvedCandidates.length / reviewedCandidates.length) * 100
+    : 0;
+  const revisionRate = reviewedCandidates.length
+    ? (revisionCandidates.length / reviewedCandidates.length) * 100
+    : 0;
+  const technicalErrorRate = searchedRows.length
+    ? (technicalErrors.length / searchedRows.length) * 100
+    : 0;
+  const averageDurationMs = measuredRows.length ? totalDurationMs / measuredRows.length : 0;
+  const averageTokens = measuredRows.length ? totalTokens / measuredRows.length : 0;
+
+  function rowStatusClass(row: ProductRow) {
+    if (row.status === "buscando") return "buscando";
+    if (row.status === "listo") {
+      return row.result?.candidates.length ? "listo" : "sin-enlaces";
+    }
+    if (row.status === "error") return "sin-enlaces";
+    return "pendiente";
+  }
+
+  function formatMs(value: number) {
+    if (!Number.isFinite(value) || value <= 0) return "—";
+    if (value < 1000) return `${Math.round(value)} ms`;
+    return `${(value / 1000).toFixed(1)} s`;
+  }
+
+  function formatNumber(value?: number) {
+    if (value === undefined || !Number.isFinite(value)) return "—";
+    return Math.round(value).toLocaleString("es-EC");
+  }
+
+  function formatPercent(value: number) {
+    if (!Number.isFinite(value)) return "0%";
+    return `${value.toFixed(1)}%`;
+  }
+
+  function metricItems(metrics?: SearchMetrics) {
+    if (!metrics) return [];
+    return [
+      ["Tiempo", formatMs(metrics.durationMs)],
+      ["Tokens total", formatNumber(metrics.totalTokens)],
+      ["Entrada", formatNumber(metrics.inputTokens)],
+      ["Salida", formatNumber(metrics.outputTokens)],
+      ["Candidatos", `${metrics.candidatesAfterFilter ?? 0}/${metrics.candidatesBeforeFilter ?? 0}`],
+      ["Modelo", metrics.model],
+    ];
+  }
+
+  function updateCandidateReview(rowId: string, candidateIndex: number, reviewStatus: CandidateReviewStatus) {
+    setRows((current) =>
+      current.map((row) => {
+        if (row.id !== rowId || !row.result) return row;
+
+        return {
+          ...row,
+          result: {
+            ...row.result,
+            candidates: row.result.candidates.map((candidate, index) =>
+              index === candidateIndex ? { ...candidate, reviewStatus } : candidate,
+            ),
+          },
+        };
+      }),
+    );
+  }
+
+  function reviewLabel(status?: CandidateReviewStatus) {
+    if (status === "aprobado") return "Aprobado";
+    if (status === "negado") return "Negado";
+    if (status === "revision") return "Pasa con revisión";
+    return "Sin revisar";
+  }
 
   return (
     <main>
@@ -109,7 +234,36 @@ export default function Home() {
         {notice && <p className="notice">{notice}</p>}
       </section>
 
-      {rows.length > 0 && (
+      {hasRows && (
+        <section className="card performancePanel">
+          <div>
+            <span className="eyebrow">Rendimiento revisado</span>
+            <h2>Calidad de enlaces</h2>
+            <p className="muted">
+              El % de error se calcula con tus marcas: negados / enlaces revisados. Revisión queda como duda, no como error definitivo.
+            </p>
+          </div>
+          <dl className="metricsGrid">
+            <div><dt>Búsquedas</dt><dd>{searchedRows.length}/{rows.length}</dd></div>
+            <div><dt>Enlaces revisados</dt><dd>{reviewedCandidates.length}/{allCandidates.length}</dd></div>
+            <div><dt>% error revisado</dt><dd>{formatPercent(manualErrorRate)}</dd></div>
+            <div><dt>% aprobados</dt><dd>{formatPercent(approvalRate)}</dd></div>
+            <div><dt>% con revisión</dt><dd>{formatPercent(revisionRate)}</dd></div>
+            <div><dt>Aprobados</dt><dd>{approvedCandidates.length}</dd></div>
+            <div><dt>Negados</dt><dd>{deniedCandidates.length}</dd></div>
+            <div><dt>Pasa revisión</dt><dd>{revisionCandidates.length}</dd></div>
+            <div><dt>Pendientes</dt><dd>{pendingCandidates}</dd></div>
+            <div><dt>% error técnico</dt><dd>{formatPercent(technicalErrorRate)}</dd></div>
+            <div><dt>Tiempo promedio</dt><dd>{formatMs(averageDurationMs)}</dd></div>
+            <div><dt>Tiempo total</dt><dd>{formatMs(totalDurationMs)}</dd></div>
+            <div><dt>Tokens promedio</dt><dd>{formatNumber(averageTokens)}</dd></div>
+            <div><dt>Tokens total</dt><dd>{formatNumber(totalTokens)}</dd></div>
+            <div><dt>Omitidos sin IA</dt><dd>{skippedRows.length}</dd></div>
+          </dl>
+        </section>
+      )}
+
+      {hasRows && (
         <div className="workspace">
           <aside className="card sidebar">
             <div className="sectionHeading">
@@ -117,11 +271,20 @@ export default function Home() {
                 <h2>2. Productos</h2>
                 <p className="muted">{completed} de {rows.length} revisados</p>
               </div>
-              {completed > 0 && (
-                <button className="ghost" onClick={() => exportResults(rows)}>
-                  Exportar
+              <div className="sidebarActions">
+                <button
+                  className="primary compact"
+                  disabled={searchingAll}
+                  onClick={searchAllRows}
+                >
+                  {searchingAll ? "Buscando todos…" : "Buscar todos"}
                 </button>
-              )}
+                {completed > 0 && (
+                  <button className="ghost" onClick={() => exportResults(rows)}>
+                    Exportar
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="rowList">
@@ -131,7 +294,7 @@ export default function Home() {
                   className={`rowItem ${selected?.id === row.id ? "active" : ""}`}
                   onClick={() => setSelectedId(row.id)}
                 >
-                  <span className={`status ${row.status}`} />
+                  <span className={`status ${rowStatusClass(row)}`} />
                   <span>
                     <strong>Fila {row.sourceRow}</strong>
                     <small>
@@ -153,7 +316,7 @@ export default function Home() {
                   </div>
                   <button
                     className="primary"
-                    disabled={selected.status === "buscando"}
+                    disabled={selected.status === "buscando" || searchingAll}
                     onClick={() => searchRow(selected.id)}
                   >
                     {selected.status === "buscando"
@@ -194,6 +357,16 @@ export default function Home() {
                         ))}
                       </ul>
                     )}
+                    {selected.result.metrics && (
+                      <dl className="metricsGrid rowMetrics">
+                        {metricItems(selected.result.metrics).map(([label, value]) => (
+                          <div key={label}>
+                            <dt>{label}</dt>
+                            <dd>{value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
                   </article>
 
                   <div className="candidates">
@@ -222,6 +395,32 @@ export default function Home() {
                           </div>
                         </div>
                         <p className="rationale">{candidate.rationale}</p>
+                        <div className="reviewBox">
+                          <span>{reviewLabel(candidate.reviewStatus)}</span>
+                          <div className="reviewActions" aria-label="Revisión manual del enlace">
+                            <button
+                              className={`reviewButton approved ${candidate.reviewStatus === "aprobado" ? "active" : ""}`}
+                              type="button"
+                              onClick={() => updateCandidateReview(selected.id, index, "aprobado")}
+                            >
+                              Aprobado
+                            </button>
+                            <button
+                              className={`reviewButton denied ${candidate.reviewStatus === "negado" ? "active" : ""}`}
+                              type="button"
+                              onClick={() => updateCandidateReview(selected.id, index, "negado")}
+                            >
+                              Negado
+                            </button>
+                            <button
+                              className={`reviewButton revision ${candidate.reviewStatus === "revision" ? "active" : ""}`}
+                              type="button"
+                              onClick={() => updateCandidateReview(selected.id, index, "revision")}
+                            >
+                              Revisión
+                            </button>
+                          </div>
+                        </div>
                         <a className="candidateLink" href={candidate.url} target="_blank" rel="noreferrer">
                           Ver ficha del producto ↗
                         </a>
@@ -240,7 +439,7 @@ export default function Home() {
         </div>
       )}
 
-      {rows.length === 0 && (
+      {!hasRows && (
         <section className="emptyState">
           <span>01</span>
           <h2>Empieza con la hoja que ya conoces</h2>

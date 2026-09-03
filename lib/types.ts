@@ -14,6 +14,9 @@ export type ProductInput = {
   originalLink: string;
 };
 
+
+export type CandidateReviewStatus = "aprobado" | "negado" | "revision";
+
 export type Candidate = {
   title: string;
   url: string;
@@ -26,12 +29,26 @@ export type Candidate = {
   matches: string[];
   differences: string[];
   rationale: string;
+  reviewStatus?: CandidateReviewStatus;
+};
+
+export type SearchMetrics = {
+  model: string;
+  durationMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  candidatesBeforeFilter?: number;
+  candidatesAfterFilter?: number;
+  skippedOpenAI?: boolean;
 };
 
 export type SearchResult = {
   summary: string;
   warnings: string[];
   candidates: Candidate[];
+  metrics?: SearchMetrics;
 };
 
 export type ProductRow = ProductInput & {
